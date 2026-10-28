@@ -84,6 +84,6 @@ echo "Output directory: ${OUTPUT_DIR}"
     --start "$START" \
     --stop "$STOP" \
     --radius-m "$SEARCH_RADIUS_M" \
-    --area-units km2
+    --area-units m2
 
 echo "DONE: task ${SLURM_ARRAY_TASK_ID}; gauge indices [${START}, ${STOP})"
