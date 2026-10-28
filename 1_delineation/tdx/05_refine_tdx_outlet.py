@@ -208,7 +208,17 @@ def dem_boundary(directory, native, snapped, site, observed, settings, diag, opt
         if crs is None or any(d.crs != crs for d in ds):
             raise ValueError('DEM tiles have missing or incompatible CRS')
         bb = transform_bounds('EPSG:4326', crs, *bounds4326, densify_pts=21)
-        mosaic, affine = merge(ds, bounds=bb, indexes=1, masked=True)
+        # Snap the window outward to the Copernicus pixel grid so merge()
+        # does not leave an unfilled last column/row at tile borders.
+        rx, ry = ds[0].res
+        x0, y0 = ds[0].bounds.left, ds[0].bounds.top
+        bb = (x0 + math.floor((bb[0] - x0) / rx) * rx,
+              y0 + math.floor((bb[1] - y0) / ry) * ry,
+              x0 + math.ceil((bb[2] - x0) / rx) * rx,
+              y0 + math.ceil((bb[3] - y0) / ry) * ry)
+        # Copernicus tiles carry no nodata value, so merge() would otherwise
+        # treat 0 m (sea level) as nodata. NaN marks only cells never filled.
+        mosaic, affine = merge(ds, bounds=bb, indexes=1, masked=True, nodata=np.nan)
         raw = np.ma.asarray(mosaic[0])
         if raw.size > max_cells:
             raise RuntimeError(f'DEM window {raw.size:,} cells > dem_max_cells={max_cells:,}; use a smaller local domain / different tiling strategy')
