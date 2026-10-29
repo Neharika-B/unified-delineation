@@ -533,6 +533,30 @@ def main():
         bgdf = gpd.GeoDataFrame(basin_rows, geometry='geometry', crs=bcrs).to_crs('EPSG:4326')
         sgdf = gpd.GeoDataFrame(stream_rows, geometry='geometry', crs=scrs).to_crs('EPSG:4326')
         sgdf['reach_length_m'] = sgdf.to_crs(metric).geometry.length.to_numpy()
+        # TDX stores some confluences as 0 m reaches with no subbasin polygon.
+        # Drop them and link their inflows to the reach below, so every reach
+        # keeps exactly one HRU; removed junctions are logged for traceability.
+        rid_str = sgdf['reach_id'].astype(str)
+        has_hru = {str(x) for x in matched}
+        is_junction = (~rid_str.isin(has_hru)) & (sgdf['reach_length_m'] == 0)
+        junction_down = dict(zip(rid_str[is_junction], sgdf.loc[is_junction, 'downstream_id'].astype(str)))
+        def below_junction(ds):
+            seen = set()
+            while ds in junction_down and ds not in seen:
+                seen.add(ds); ds = junction_down[ds]
+            return ds
+        removed_junctions = []
+        for jid in junction_down:
+            removed_junctions.append({'junction_id': jid, 'flows_into': below_junction(jid),
+                                      'upstream_reaches': ';'.join(rid_str[sgdf['downstream_id'].astype(str) == jid])})
+        if removed_junctions:
+            ds_str = sgdf['downstream_id'].astype(str)
+            relink = ds_str.isin(junction_down)
+            sgdf.loc[relink, 'downstream_id'] = [type(v)(below_junction(str(v))) if v != '' else v
+                                                 for v in sgdf.loc[relink, 'downstream_id']]
+            sgdf = sgdf[~is_junction].reset_index(drop=True)
+            warnings.append(f'Removed {len(removed_junctions)} zero-length TDX junction reaches without subbasins: '
+                            f'{[j["junction_id"] for j in removed_junctions][:10]}')
         bp = bgdf.to_crs(metric)
         areas = bp.geometry.area / 1e6
         area_sum = float(areas.sum())
@@ -570,6 +594,11 @@ def main():
             writer.writerow(['reach_id', 'area_km2', 'outlet_subbasin'])
             for link, area in zip(bgdf['reach_id'], areas):
                 writer.writerow([link, round(float(area), 8), link == rid])
+        junction_csv = diag / f'{site}_tdx_removed_junctions.csv'
+        with junction_csv.open('w', newline='') as fh:
+            writer = csv.DictWriter(fh, fieldnames=['junction_id', 'flows_into', 'upstream_reaches'])
+            writer.writeheader()
+            writer.writerows(removed_junctions)
         fig, ax = plt.subplots(figsize=(11, 9))
         bp.plot(ax=ax, facecolor='#cfe4c6', edgecolor='#77936d', linewidth=.5, alpha=.75)
         sgdf.to_crs(metric).plot(ax=ax, color='#2775a5', linewidth=1.2)
@@ -596,6 +625,8 @@ def main():
             'upstream_reach_count': len(upstream), 'native_subbasin_polygon_count': len(bgdf),
             'unique_subbasin_reach_count': len(matched), 'total_region_reaches_scanned': n_scanned,
             'missing_subbasin_reach_count': len(missing),
+            'removed_zero_length_junctions': len(removed_junctions),
+            'removed_junctions_csv': str(junction_csv),
             'native_polygon_area_sum_km2': round(area_sum, 6),
             'native_polygon_union_area_km2': round(union_area, 6),
             'outlet_native_subbasin_area_km2': round(outlet_area, 6),
